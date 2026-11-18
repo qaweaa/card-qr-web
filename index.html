@@ -16,6 +16,7 @@
 .toast{position:fixed;bottom:calc(20px + env(safe-area-inset-bottom));left:50%;transform:translate(-50%,12px);background:#24324b;color:white;font-size:13px;border-radius:10px;padding:11px 16px;opacity:0;pointer-events:none;transition:.18s;z-index:99;white-space:nowrap;max-width:92vw;overflow:hidden;text-overflow:ellipsis}.toast.show{opacity:1;transform:translate(-50%,0)}
 @media(min-width:650px){.wrap{padding-top:27px}.qrframe canvas{max-width:330px}}
 @media(max-width:375px){.wrap{padding:10px 12px 18px}.intro{padding:18px 15px}.results{padding:14px 12px 18px}.qrframe{padding:5px}.headline{font-size:21px}}
+    .type-picker{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin:0 0 14px;padding:4px;border:1px solid var(--bd);border-radius:14px;background:#f1f4fb}.type-btn{min-height:43px;border:1px solid transparent;border-radius:10px;background:transparent;color:#586983;font-size:14px;font-weight:750}.type-btn[aria-pressed="true"]{background:#fff;color:var(--blue);border-color:#dce2ef;box-shadow:0 2px 7px rgba(28,47,88,.06)}
 </style>
 </head>
 <body>
@@ -24,7 +25,8 @@
   <section class="paper intro" id="entrySection">
     <h1 class="headline">批量粘贴，一张张扫码</h1>
     <p class="sub">一次粘贴任意多组卡密，自动识别并生成二维码，左右切换即可查看下一张。</p>
-    <div class="boxlabel"><label for="pasteInput">快速粘贴卡密</label><span class="subtle">每组卡号一行、密码一行</span></div>
+    <div class="type-picker" role="group" aria-label="卡片类型"><button class="type-btn" type="button" id="typeTmall" aria-pressed="true">天猫超市卡</button><button class="type-btn" type="button" id="typeHema" aria-pressed="false">盒马卡</button></div>
+    <div class="boxlabel"><label for="pasteInput">快速粘贴卡密</label><span class="subtle" id="typeHint">19 位卡号 · 16 位密码</span></div>
     <textarea id="pasteInput" rows="6" placeholder="3100xxxxxxxxxxxxxxx&#10;XXXXXXXXXXXXXXXX&#10;&#10;3100xxxxxxxxxxxxxxx&#10;XXXXXXXXXXXXXXXX" autocomplete="off" autocapitalize="off" spellcheck="false" aria-label="快速粘贴一组或多组卡号和密码"></textarea>
     <p class="tips">支持多组连续粘贴、空行分隔，也支持 <strong>卡号：…… 密码：……</strong> 的格式。粘贴后会自动生成。</p>
     <button class="btn blue wide" id="makeBtn" type="button">生成所有二维码</button>
@@ -33,7 +35,7 @@
   <section class="paper results" id="resultSection" hidden aria-label="二维码查看器">
     <p class="counter">第 <strong id="currentPos">1</strong> / <strong id="totalPos">1</strong> 张</p>
     <p class="numline" id="cardDisplay"></p>
-    <div class="qrframe" id="qrStage" aria-label="当前卡密二维码，左右轻扫可切换"><canvas id="qrCanvas" width="1024" height="1024" role="img" aria-label="当前卡密的天猫绑定二维码"></canvas></div>
+    <div class="qrframe" id="qrStage" aria-label="当前卡密二维码，左右轻扫可切换"><canvas id="qrCanvas" width="1024" height="1024" role="img" aria-label="当前卡密的绑定二维码"></canvas></div>
     <div class="nav">
       <button class="btn ghost" id="prevBtn" type="button">← 上一个</button>
       <button class="btn blue" id="nextBtn" type="button">下一个 →</button>
@@ -44,7 +46,7 @@
     <div class="sep"></div>
     <div class="actions"><button id="editBtn" type="button" class="linkbutton">重新粘贴卡密</button><button id="saveBtn" type="button" class="linkbutton">保存当前二维码</button></div>
   </section>
-  <p class="foot">页面内生成，无第三方二维码服务；扫码绑定时由天猫处理卡号和密码。请妥善保管二维码。<span style="display:block;margin-top:8px">作者：神农有故</span></p>
+  <p class="foot">页面内生成，无第三方二维码服务；扫码绑定时由对应平台处理卡号和密码。请妥善保管二维码。<span style="display:block;margin-top:8px">作者：神农有故</span></p>
 </div>
 <div class="toast" id="toast" role="status" aria-live="polite"></div>
 <script>
@@ -1316,33 +1318,34 @@ window.QRMatrix=require('./index');window.QREcc=require('./QRErrorCorrectLevel')
   const entry=$('entrySection');
   const results=$('resultSection');
   const error=$('error');
-  const BASE='https://pages.tmall.com/wow/chaoshi/act/xtcard?cardNum=';
+  const TYPES={"tmall":{"name":"天猫超市卡","length":19,"base":"https://pages.tmall.com/wow/chaoshi/act/xtcard?cardNum=","suffix":"&noUse=#bindCard","example":"3100xxxxxxxxxxxxxxx"},"hema":{"name":"盒马卡","length":18,"base":"https://pages.tmall.com/wow/hema/act/giftcard?cardNum=","suffix":"","example":"9100xxxxxxxxxxxxxx"}};
+  let selectedType='tmall';
   let cards=[];
   let current=0;
   let toastTimer=null;
 
-  function linkFor(card){return BASE+card.number+'&cardPass='+card.password+'&noUse=#bindCard';}
+  function linkFor(card){const cfg=TYPES[card.type];return cfg.base+card.number+'&cardPass='+card.password+cfg.suffix;}
   function alertToast(t){const el=$('toast');el.textContent=t;el.classList.add('show');clearTimeout(toastTimer);toastTimer=setTimeout(()=>el.classList.remove('show'),2100);}
 
-  function parseCards(raw){
-    // Accept paired lines, multiple pairs, blank lines, labels, and two values on one line.
-    // Explicit token boundaries prevent mistaking a substring of a longer token for a password.
-    const text=String(raw||'').normalize('NFKC').toUpperCase();
-    const re=/(?:^|[^A-Z0-9])(\d{19}|[A-Z0-9]{16})(?=$|[^A-Z0-9])/g;
-    const items=[];
-    let match, pending=null, incomplete=0, skipped=0;
-    while((match=re.exec(text))!==null){
-      const token=match[1];
-      if(/^\d{19}$/.test(token)){
-        if(pending!==null)incomplete++;
-        pending=token;
-      }else if(pending!==null){
-        items.push({number:pending,password:token});pending=null;
-      }else{skipped++;}
-    }
-    if(pending!==null)incomplete++;
-    return {items,incomplete,skipped};
+  function parseCards(raw,type){
+  const text=String(raw||'').normalize('NFKC').toUpperCase();
+  const re=/(?:^|[^A-Z0-9])(\d{19}|\d{18}|[A-Z0-9]{16})(?=$|[^A-Z0-9])/g;
+  const items=[];
+  let match,pending=null,incomplete=0,skipped=0,wrongType=0;
+  while((match=re.exec(text))!==null){
+    const token=match[1];
+    if(/^\d{18,19}$/.test(token)){
+      if(pending!==null)incomplete++;
+      pending=token;
+    }else if(pending!==null){
+      if(pending.length===TYPES[type].length)items.push({number:pending,password:token,type});
+      else wrongType++;
+      pending=null;
+    }else{skipped++;}
   }
+  if(pending!==null)incomplete++;
+  return {items,incomplete,skipped,wrongType};
+}
 
   function renderQr(text){
     const qr=new window.QRMatrix(0,window.QREcc.M);
@@ -1367,16 +1370,17 @@ window.QRMatrix=require('./index');window.QREcc=require('./QRErrorCorrectLevel')
     try{renderQr(linkFor(c));}catch(e){error.textContent='二维码生成失败：'+e.message;return;}
     $('currentPos').textContent=String(current+1);
     $('totalPos').textContent=String(cards.length);
-    $('cardDisplay').textContent='卡号 '+c.number;
+    $('cardDisplay').textContent=TYPES[c.type].name+' · 卡号 '+c.number;
+    canvas.setAttribute('aria-label',TYPES[c.type].name+'绑定二维码');
     $('prevBtn').disabled=current===0;
     $('nextBtn').disabled=current===cards.length-1;
     $('progressBar').style.width=((current+1)/cards.length*100)+'%';
     $('swipeHint').textContent=cards.length===1?'当前只有一张二维码':'在二维码上左右滑动也能切换';
   }
   function generate(scroll=true){
-    const parsed=parseCards(input.value);
+    const parsed=parseCards(input.value,selectedType);
     if(!parsed.items.length){
-      error.textContent='没有识别到完整卡密。请按「19 位卡号 + 16 位密码」两行一组粘贴。';
+      error.textContent=parsed.wrongType?'卡号位数与所选卡片类型不符，请切换卡片类型。':'没有识别到完整卡密。请按「'+TYPES[selectedType].length+' 位卡号 + 16 位密码」两行一组粘贴。';
       return false;
     }
     cards=parsed.items;
@@ -1386,13 +1390,25 @@ window.QRMatrix=require('./index');window.QREcc=require('./QRErrorCorrectLevel')
     entry.hidden=true;
     results.hidden=false;
     const skipped=parsed.incomplete+parsed.skipped;
-    $('summary').textContent='已生成 '+cards.length+' 张二维码'+(skipped?' · 有 '+skipped+' 条未匹配内容被跳过，请核对':'');
+    $('summary').textContent='已生成 '+cards.length+' 张'+TYPES[selectedType].name+'二维码'+(parsed.wrongType?' · 已跳过 '+parsed.wrongType+' 张其他类型卡，请核对':'')+(skipped?' · 有 '+skipped+' 条未匹配内容被跳过，请核对':'');
     if(scroll){
       input.blur();
       requestAnimationFrame(()=>results.scrollIntoView({behavior:'smooth',block:'start'}));
     }
     return true;
   }
+  function selectType(type){
+    selectedType=type;
+    const cfg=TYPES[type];
+    $('typeTmall').setAttribute('aria-pressed',String(type==='tmall'));
+    $('typeHema').setAttribute('aria-pressed',String(type==='hema'));
+    $('typeHint').textContent=cfg.length+' 位卡号 · 16 位密码';
+    input.placeholder=cfg.example+'\nXXXXXXXXXXXXXXXX\n\n'+cfg.example+'\nXXXXXXXXXXXXXXXX';
+    error.textContent='';
+  }
+  $('typeTmall').addEventListener('click',()=>selectType('tmall'));
+  $('typeHema').addEventListener('click',()=>selectType('hema'));
+  selectType(selectedType);
   $('makeBtn').addEventListener('click',()=>generate());
   input.addEventListener('paste',()=>setTimeout(()=>{
     if(input.value.trim())generate();
@@ -1410,7 +1426,7 @@ window.QRMatrix=require('./index');window.QREcc=require('./QRErrorCorrectLevel')
     try{
       const a=document.createElement('a');
       a.href=canvas.toDataURL('image/png');
-      a.download='购物卡二维码_'+String(current+1).padStart(3,'0')+'_'+c.number+'.png';
+      a.download=TYPES[c.type].name+'二维码_'+String(current+1).padStart(3,'0')+'_'+c.number+'.png';
       document.body.appendChild(a);a.click();a.remove();
       alertToast('已请求保存；微信内可长按或截图保存');
     }catch(e){alertToast('保存受限，可使用系统截图保存');}
